@@ -17,7 +17,8 @@ Thank you for your interest in contributing to bun-bm25s! This document provides
 
 3. **Run tests:**
    ```bash
-   bun test
+   bun test           # Full TypeScript suite (including package/type checks)
+   npm run test:node  # Build and run public-API regression tests under Node
    ```
 
 4. **Run benchmarks:**
