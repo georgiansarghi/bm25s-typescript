@@ -11,6 +11,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
+    },
+    "./core": {
+      "types": "./dist/core.d.ts",
+      "import": "./dist/core.js",
+      "require": "./dist/core.cjs"
     }
   },
   "files": [
@@ -19,8 +24,8 @@
   ],
   "scripts": {
     "build": "npm run build:esm && npm run build:cjs && npm run build:types",
-    "build:esm": "esbuild src/index.ts --bundle --format=esm --outfile=dist/index.js --platform=node",
-    "build:cjs": "esbuild src/index.ts --bundle --format=cjs --outfile=dist/index.cjs --platform=node",
+    "build:esm": "esbuild src/index.ts --bundle --format=esm --outfile=dist/index.js --platform=node && esbuild src/core.ts --bundle --format=esm --outfile=dist/core.js --platform=neutral",
+    "build:cjs": "esbuild src/index.ts --bundle --format=cjs --outfile=dist/index.cjs --platform=node && esbuild src/core.ts --bundle --format=cjs --outfile=dist/core.cjs --platform=neutral",
     "build:types": "tsc --declaration --emitDeclarationOnly --outDir dist",
     "typecheck": "tsc --noEmit",
     "test": "bun test",

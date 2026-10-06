@@ -15,9 +15,10 @@ import {
   getTfcScorer,
   getIdfScorer,
 } from "./scoring.js";
-import { buildCSCMatrix, type CSCMatrix, serializeCSC, deserializeCSC } from "./sparse.js";
-import { topK, type TopKResult } from "./selection.js";
-import { type Tokenized, tokenize, Tokenizer, type TokenizerOptions } from "./tokenizer.js";
+import { buildCSCMatrix, type CSCMatrix, serializeCSC } from "./sparse.js";
+import { topK } from "./selection.js";
+import { type Tokenized } from "./tokenizer.js";
+import { assertSnapshotByteOrder, decodeSnapshot, type BM25Snapshot } from "./snapshot.js";
 
 /**
  * BM25 Configuration options
@@ -399,163 +400,56 @@ export class BM25<Doc = number> {
   }
 
   /**
-   * Save the BM25 index to a directory
+   * Export owned binary buffers and metadata for platform-independent I/O.
+   * Corpus arrays are copied shallowly; document objects are not cloned.
    */
-  async save(
-    saveDir: string,
-    options: {
-      corpus?: any[];
-      /** Show progress (no-op; accepted for parity with bm25s >= 0.3.6) */
-      showProgress?: boolean;
-      /** Leave progress bars after completion (no-op; accepted for parity with bm25s >= 0.3.10) */
-      leaveProgress?: boolean;
-    } = {}
-  ): Promise<void> {
+  toSnapshot(): BM25Snapshot<Doc> {
     if (!this._index) {
       throw new Error("Index not built. Call index() first.");
     }
-
-    const fs = await import("fs/promises");
-    const path = await import("path");
-
-    // Create directory
-    await fs.mkdir(saveDir, { recursive: true });
-
-    // Save matrix data
-    const matrixBuffer = serializeCSC(this._index.matrix);
-    await fs.writeFile(
-      path.join(saveDir, "matrix.bin"),
-      new Uint8Array(matrixBuffer)
-    );
-
-    // Save non-occurrence array if present
-    if (this._index.nonOccArray) {
-      await fs.writeFile(
-        path.join(saveDir, "nonoccurrence.bin"),
-        new Uint8Array(this._index.nonOccArray.buffer)
-      );
-    } else {
-      await fs.rm(path.join(saveDir, "nonoccurrence.bin"), { force: true });
-    }
-
-    // A prototype-free dictionary preserves tokens such as "__proto__".
-    const vocabObj: Record<string, number> = Object.create(null);
-    for (const [key, value] of this.vocabDict) {
-      vocabObj[key] = value;
-    }
-    await fs.writeFile(
-      path.join(saveDir, "vocab.json"),
-      JSON.stringify(vocabObj)
-    );
-
-    // Save parameters
-    const params = {
-      k1: this.k1,
-      b: this.b,
-      delta: this.delta,
-      method: this.method,
-      idfMethod: this.idfMethod,
-      numDocs: this._index.numDocs,
-      vocabSize: this._index.vocabSize,
+    assertSnapshotByteOrder();
+    const vocab: Record<string, number> = Object.create(null);
+    for (const [key, value] of this.vocabDict) vocab[key] = value;
+    return {
+      version: 1,
+      params: {
+        k1: this.k1,
+        b: this.b,
+        delta: this.delta,
+        method: this.method,
+        idfMethod: this.idfMethod,
+        numDocs: this._index.numDocs,
+        vocabSize: this._index.vocabSize,
+      },
+      vocab,
+      matrix: serializeCSC(this._index.matrix),
+      nonOccurrence: this._index.nonOccArray?.slice().buffer,
+      corpus: this.corpus?.slice(),
     };
-    await fs.writeFile(
-      path.join(saveDir, "params.json"),
-      JSON.stringify(params, null, 2)
-    );
-
-    // Save corpus if provided
-    const corpusToSave = options.corpus ?? this.corpus;
-    if (corpusToSave) {
-      const corpusLines = corpusToSave.map((doc) => JSON.stringify(doc)).join("\n");
-      await fs.writeFile(path.join(saveDir, "corpus.jsonl"), corpusLines);
-    } else {
-      await fs.rm(path.join(saveDir, "corpus.jsonl"), { force: true });
-    }
   }
 
-  /**
-   * Load a BM25 index from a directory. With `loadCorpus`, pass the stored
-   * corpus item type: `await BM25.load<string>(dir, { loadCorpus: true })`.
-   * Required files (including a requested corpus) must exist and be readable.
-   */
-  static async load<D = number>(
-    saveDir: string,
-    options: {
-      loadCorpus?: boolean;
-      /** Show progress (no-op; accepted for parity with bm25s >= 0.3.10) */
-      showProgress?: boolean;
-      /** Leave progress bars after completion (no-op; accepted for parity with bm25s >= 0.3.10) */
-      leaveProgress?: boolean;
-    } = {}
-  ): Promise<BM25<D>> {
-    const fs = await import("fs/promises");
-    const path = await import("path");
+  /** Validate and restore a snapshot without tokenizing or rebuilding the index. */
+  static fromSnapshot<D = number>(snapshot: BM25Snapshot<D>): BM25<D> {
+    return new BM25<D>().restoreSnapshot(snapshot);
+  }
 
-    // Load parameters
-    const paramsJson = await fs.readFile(
-      path.join(saveDir, "params.json"),
-      "utf-8"
-    );
-    const params = JSON.parse(paramsJson);
-
-    // Create BM25 instance with saved parameters
-    const bm25 = new BM25<D>({
-      k1: params.k1,
-      b: params.b,
-      delta: params.delta,
-      method: params.method,
-      idfMethod: params.idfMethod,
-    });
-
-    // Load matrix
-    const matrixBuffer = await fs.readFile(path.join(saveDir, "matrix.bin"));
-    const matrix = deserializeCSC(matrixBuffer.buffer as ArrayBuffer);
-
-    // Baselines are required for BM25L/+ and must not affect other methods.
-    let nonOccArray: Float64Array | null = null;
-    if (BM25.NON_OCC_METHODS.includes(bm25.method)) {
-      const nonOccBuffer = await fs.readFile(
-        path.join(saveDir, "nonoccurrence.bin")
-      );
-      if (nonOccBuffer.byteLength !== params.vocabSize * Float64Array.BYTES_PER_ELEMENT) {
-        throw new Error("Invalid non-occurrence array length");
-      }
-      nonOccArray = new Float64Array(nonOccBuffer.buffer.slice(
-        nonOccBuffer.byteOffset, nonOccBuffer.byteOffset + nonOccBuffer.byteLength
-      ));
-    }
-
-    // Load vocabulary
-    const vocabJson = await fs.readFile(
-      path.join(saveDir, "vocab.json"),
-      "utf-8"
-    );
-    const vocabObj = JSON.parse(vocabJson);
-    bm25.vocabDict = new Map(Object.entries(vocabObj).map(([k, v]) => [k, v as number]));
-
-    // Set index
-    bm25._index = {
-      matrix,
+  /** Shared by the portable factory and the Node subclass. */
+  protected restoreSnapshot(snapshot: BM25Snapshot<Doc>): this {
+    const state = decodeSnapshot(snapshot);
+    const params = snapshot.params;
+    this.k1 = params.k1;
+    this.b = params.b;
+    this.delta = params.delta;
+    this.method = params.method;
+    this.idfMethod = params.idfMethod;
+    this._index = {
+      matrix: state.matrix,
       numDocs: params.numDocs,
       vocabSize: params.vocabSize,
-      nonOccArray,
+      nonOccArray: state.nonOccArray,
     };
-
-    // Load corpus if requested
-    if (options.loadCorpus) {
-      const corpusText = await fs.readFile(
-        path.join(saveDir, "corpus.jsonl"),
-        "utf-8"
-      );
-      bm25.corpus = corpusText
-        .split("\n")
-        .filter((line) => line.trim())
-        .map((line) => JSON.parse(line));
-      if (bm25.corpus.length !== params.numDocs) {
-        throw new Error("Invalid corpus length");
-      }
-    }
-
-    return bm25;
+    this.vocabDict = state.vocab;
+    this.corpus = state.corpus;
+    return this;
   }
 }
