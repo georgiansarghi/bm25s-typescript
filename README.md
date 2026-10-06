@@ -197,6 +197,78 @@ const retriever = await BM25.load("./my_index", {
 });
 ```
 
+## Portable core and in-memory snapshots
+
+Use **`bm25s/core`** in React Native or browsers. Its import graph has no Node
+built-ins, filesystem calls, or DOM dependency. The normal `bm25s` entry keeps
+the existing Node `BM25.save()` / `BM25.load()` API.
+
+```typescript
+import { BM25, tokenize } from "bm25s/core";
+
+const index = new BM25<string>();
+const corpus = ["a cat purrs", "a dog plays"];
+index.index(tokenize(corpus), { corpus });
+
+// On your build machine: export precomputed scores, not the original tokens.
+const snapshot = index.toSnapshot();
+
+// In your app: hydrate after its asset loader supplies the snapshot fields.
+const loaded = BM25.fromSnapshot(snapshot);
+const result: string = loaded.retrieve([["dog"]], { k: 1 }).documents[0][0];
+```
+
+Both entries expose `toSnapshot()` and `BM25.fromSnapshot()`. Hydration does
+**not** tokenize, build or rescore an index. The Node factory returns a Node
+instance that can still save to disk. The portable class deliberately has no
+`save` or `load` methods.
+
+### Snapshot contract
+
+| Field | Contents |
+| --- | --- |
+| `version` | Exactly `1`. |
+| `params` | `k1`, `b`, `delta`, `method`, `idfMethod`, `numDocs`, `vocabSize`. |
+| `vocab` | Token-to-ID object; a complete bijection over columns, or empty for numeric-ID-only indexes. |
+| `matrix` | Existing CSC binary bytes as `ArrayBuffer` or `Uint8Array`. |
+| `nonOccurrence` | Float64 baseline bytes, required only for BM25L/BM25+. |
+| `corpus` | Optional document array, in index row order. |
+
+Version 1 uses the existing CSC layout on little-endian platforms, including
+current Node/browser/iOS/Android targets. Other byte orders are rejected rather
+than silently misread. Keep binary fields as binary assets: **do not JSON-stringify
+the entire snapshot**. Store JSON metadata separately and reassemble the envelope
+after reading its binary assets.
+
+Existing Node files are unchanged. An app can assemble version 1 from
+`params.json`, `vocab.json`, `matrix.bin`, the method's optional
+`nonoccurrence.bin`, and an optional parsed `corpus.jsonl`. Its own Expo/native
+or browser loader supplies the bytes; this package does not fetch or locate assets.
+Build-time and query-time normalization/stemming must still match: snapshots
+contain scores and vocabulary, not an executable tokenizer configuration.
+
+Hydration validates the version, supported methods, finite parameters
+(`k1 >= 0`, `0 <= b <= 1`, `delta >= 0`), dimensions, exact binary lengths,
+column pointers, document/vocabulary IDs, finite scores, and baseline/corpus
+consistency. Node loading uses the same validator; malformed existing files now
+fail explicitly.
+
+Binary input views are copied once, respecting byte offsets and lengths even for
+unaligned views and Node Buffers. Export also returns owned binary buffers.
+Vocabulary and corpus array containers are copied; **corpus document objects are
+not deep-cloned**. Retain one hydrated instance instead of loading on every render.
+Validation/copying costs are paid at hydration, not on each query.
+
+These are structural checks, not authentication or application resource limits.
+For downloaded assets, enforce your own size limits and verify dataset version,
+hashes and tokenizer settings in an application manifest. A different vocabulary
+or corpus with the same valid dimensions cannot be detected without that manifest.
+
+The portable entry is tested as ESM/CJS, with a browser bundle running without
+Node/DOM globals and with declarations that require no Node types. This is **not**
+a claim of an Expo/Metro build or Hermes/device performance validation; asset
+packaging and device testing remain application work.
+
 ## Upstream parity
 
 This package is kept in sync with Python [bm25s](https://github.com/xhluca/bm25s) and is currently at parity with **v0.3.11**. Synced in 2.0.0 (from the v0.3.2 baseline). **Breaking:** default stopword lists and the word splitter now match upstream, so tokens and search results change; rebuild saved indexes after upgrading.

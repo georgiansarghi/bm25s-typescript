@@ -17,6 +17,17 @@ const retriever = new BM25();
 retriever.index(tokenize(corpus, { stopwords: "en" }));
 const results: RetrievalResults<string> = retriever.retrieve(tokenize(["cat"], { stopwords: "en" }), { corpus, k: 1 });
 console.log(results.documents[0][0]);
+
+import { BM25 as CoreBM25, type BM25Snapshot } from "bm25s/core";
+const portable = new CoreBM25<string>();
+portable.index(tokenize(corpus), { corpus });
+const snapshot: BM25Snapshot<string> = portable.toSnapshot();
+const restored: CoreBM25<string> = CoreBM25.fromSnapshot(snapshot);
+const doc: string = restored.retrieve([["cat"]]).documents[0][0];
+const nodeRestored: BM25<string> = BM25.fromSnapshot(snapshot);
+void nodeRestored.save("restored");
+// @ts-expect-error portable entry has no filesystem API
+portable.save("not-supported");
 `;
 
 function run(cmd: string[], cwd: string) {
@@ -47,6 +58,18 @@ describe("published types", () => {
         );
         expect(`${resolution}: ${tsc.out}`).toBe(`${resolution}: `);
       }
+      // Core declarations must also work without ambient Node types.
+      writeFileSync(join(tmp, "portable.ts"), `import { BM25, tokenize } from "bm25s/core";
+const index = new BM25();
+index.index(tokenize(["cat", "dog"]));
+const id: number = BM25.fromSnapshot(index.toSnapshot()).retrieve([["dog"]]).documents[0][0];`);
+      writeFileSync(join(tmp, "tsconfig.json"), JSON.stringify({
+        compilerOptions: { strict: true, noEmit: true, target: "es2022", module: "esnext", moduleResolution: "bundler", types: [], lib: ["es2022"] },
+        files: ["portable.ts"],
+      }));
+      const portable = run([join(root, "node_modules/.bin/tsc"), "-p", "tsconfig.json"], tmp);
+      expect(portable.code).toBe(0);
+      expect(portable.out).toBe("");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
