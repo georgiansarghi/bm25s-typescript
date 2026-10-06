@@ -342,20 +342,15 @@ export class BM25<Doc = number> {
     let queryTokenIdArrays: number[][];
 
     if (Array.isArray(queryTokens) && queryTokens.length > 0) {
-      const firstQuery = queryTokens[0];
-      if (Array.isArray(firstQuery)) {
-        if (typeof firstQuery[0] === "string") {
-          // String tokens - convert to IDs
-          queryTokenIdArrays = (queryTokens as string[][]).map((q) =>
-            this.getTokenIds(q)
-          );
-        } else {
-          // Already token IDs
-          queryTokenIdArrays = queryTokens as number[][];
+      // Classify each query so an empty first row cannot misclassify the batch.
+      queryTokenIdArrays = queryTokens.map((query) => {
+        if (!Array.isArray(query)) {
+          throw new Error("Invalid query format");
         }
-      } else {
-        throw new Error("Invalid query format");
-      }
+        return typeof query[0] === "string"
+          ? this.getTokenIds(query as string[])
+          : query as number[];
+      });
     } else if ("ids" in queryTokens && "vocab" in queryTokens) {
       // Tokenized object - need to match vocabulary
       const tokenized = queryTokens as Tokenized;
@@ -439,10 +434,12 @@ export class BM25<Doc = number> {
         path.join(saveDir, "nonoccurrence.bin"),
         new Uint8Array(this._index.nonOccArray.buffer)
       );
+    } else {
+      await fs.rm(path.join(saveDir, "nonoccurrence.bin"), { force: true });
     }
 
-    // Save vocabulary
-    const vocabObj: Record<string, number> = {};
+    // A prototype-free dictionary preserves tokens such as "__proto__".
+    const vocabObj: Record<string, number> = Object.create(null);
     for (const [key, value] of this.vocabDict) {
       vocabObj[key] = value;
     }
@@ -471,12 +468,15 @@ export class BM25<Doc = number> {
     if (corpusToSave) {
       const corpusLines = corpusToSave.map((doc) => JSON.stringify(doc)).join("\n");
       await fs.writeFile(path.join(saveDir, "corpus.jsonl"), corpusLines);
+    } else {
+      await fs.rm(path.join(saveDir, "corpus.jsonl"), { force: true });
     }
   }
 
   /**
    * Load a BM25 index from a directory. With `loadCorpus`, pass the stored
    * corpus item type: `await BM25.load<string>(dir, { loadCorpus: true })`.
+   * Required files (including a requested corpus) must exist and be readable.
    */
   static async load<D = number>(
     saveDir: string,
@@ -511,15 +511,18 @@ export class BM25<Doc = number> {
     const matrixBuffer = await fs.readFile(path.join(saveDir, "matrix.bin"));
     const matrix = deserializeCSC(matrixBuffer.buffer as ArrayBuffer);
 
-    // Load non-occurrence array if present
+    // Baselines are required for BM25L/+ and must not affect other methods.
     let nonOccArray: Float64Array | null = null;
-    try {
+    if (BM25.NON_OCC_METHODS.includes(bm25.method)) {
       const nonOccBuffer = await fs.readFile(
         path.join(saveDir, "nonoccurrence.bin")
       );
-      nonOccArray = new Float64Array(nonOccBuffer.buffer);
-    } catch {
-      // File doesn't exist, which is fine for non-BM25L/BM25+ methods
+      if (nonOccBuffer.byteLength !== params.vocabSize * Float64Array.BYTES_PER_ELEMENT) {
+        throw new Error("Invalid non-occurrence array length");
+      }
+      nonOccArray = new Float64Array(nonOccBuffer.buffer.slice(
+        nonOccBuffer.byteOffset, nonOccBuffer.byteOffset + nonOccBuffer.byteLength
+      ));
     }
 
     // Load vocabulary
@@ -540,17 +543,16 @@ export class BM25<Doc = number> {
 
     // Load corpus if requested
     if (options.loadCorpus) {
-      try {
-        const corpusText = await fs.readFile(
-          path.join(saveDir, "corpus.jsonl"),
-          "utf-8"
-        );
-        bm25.corpus = corpusText
-          .split("\n")
-          .filter((line) => line.trim())
-          .map((line) => JSON.parse(line));
-      } catch {
-        // Corpus file doesn't exist
+      const corpusText = await fs.readFile(
+        path.join(saveDir, "corpus.jsonl"),
+        "utf-8"
+      );
+      bm25.corpus = corpusText
+        .split("\n")
+        .filter((line) => line.trim())
+        .map((line) => JSON.parse(line));
+      if (bm25.corpus.length !== params.numDocs) {
+        throw new Error("Invalid corpus length");
       }
     }
 

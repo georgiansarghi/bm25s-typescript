@@ -24,7 +24,7 @@
     "build:types": "tsc --declaration --emitDeclarationOnly --outDir dist",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "test:node": "node --test tests/*.test.js",
+    "test:node": "npm run build && node --test tests/node/*.mjs",
     "test:bun": "bun test",
     "benchmark": "bun run benchmarks/benchmark.ts",
     "prepublishOnly": "npm run build"

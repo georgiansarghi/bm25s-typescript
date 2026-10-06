@@ -173,7 +173,9 @@ console.log(results.scores);    // [Float64Array([score1, score2, ...]), ...]
 
 **`save(directory, options?)`**
 
-Save the index to disk.
+Save the index to disk. Reusing a directory removes obsolete `nonoccurrence.bin`
+and `corpus.jsonl` files when the new index does not supply them; unrelated files
+are left alone. Saving is not atomic, so avoid concurrent readers/writers.
 
 ```typescript
 await retriever.save("./my_index", {
@@ -184,7 +186,10 @@ await retriever.save("./my_index", {
 
 **`BM25.load(directory, options?)`**
 
-Load an index from disk.
+Load an index from disk. BM25L/BM25+ require `nonoccurrence.bin`; other methods
+ignore it. `loadCorpus: true` requires a readable, valid `corpus.jsonl` with one
+row per indexed document. Missing required files and corrupt corpus data reject
+the load rather than silently changing scores or falling back to document IDs.
 
 ```typescript
 const retriever = await BM25.load("./my_index", {
